@@ -67,7 +67,12 @@ public class Node {
     }
     
     public synchronized void multicastRequest() throws IOException {
+        requestQueue.pushRequest(new RequestId(clock, id));
+        
         for (int i = 0; i < NUM_NODES; ++i) {
+            if (i == id)
+                continue;
+            
             // Write message
             // - Message identification
             writers[i].write(Integer.toString(clock) + "\n"); // Clock

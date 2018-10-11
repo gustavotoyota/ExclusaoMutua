@@ -61,6 +61,9 @@ public class RequestQueue {
     public synchronized void incrementRequestResponses(RequestId requestId) {
         RequestInfo requestInfo = requestMap.get(requestId);
         
+        if (requestInfo == null)
+            requestInfo = null;
+        
         requestInfo.incrementNumResponses();
     }
     
