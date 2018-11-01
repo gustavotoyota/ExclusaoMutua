@@ -13,6 +13,8 @@ import java.util.Scanner;
  * @author Gustavo
  */
 public class ExclusaoMutua {
+    public static final int NUM_NODES = 3;
+    public static final int NUM_RESOURCES = 2;
 
     /**
      * @param args the command line arguments
@@ -40,13 +42,14 @@ public class ExclusaoMutua {
         
         // Handle message writing
         while (true) {
+            int resourceId;
             synchronized (System.in) {
                 // Read user input message
-                scanner.nextLine();
+                resourceId = scanner.nextInt();
             }
             
             // Multicast the message
-            node.multicastRequest();
+            node.multicastRequest(resourceId);
         }
     }
     

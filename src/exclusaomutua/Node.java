@@ -5,6 +5,7 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.net.Socket;
+import java.util.concurrent.ConcurrentHashMap;
 
 /*
  * To change this license header, choose License Headers in Project Properties.
@@ -17,8 +18,6 @@ import java.net.Socket;
  * @author Gustavo
  */
 public class Node {
-    public static final int NUM_NODES = 3;
-    
     // Node informations
     private int clock;
     private final int id;
@@ -26,14 +25,25 @@ public class Node {
     // Client socket writers
     private BufferedWriter[] writers;
     
+    // Request map
+    private final ConcurrentHashMap<RequestId, Integer> requestResourceMap;
+    
     // Request queue
-    private final RequestQueue requestQueue;
+    private final RequestQueue[] requestQueues;
     
     public Node(int id) throws IOException {
         this.clock = 0;
         this.id = id;
         
-        requestQueue = new RequestQueue(id);
+        // Request map
+        requestResourceMap = new ConcurrentHashMap<>();
+        
+        // Request queue
+        requestQueues = new RequestQueue[ExclusaoMutua.NUM_RESOURCES];
+        for (int i = 0; i < ExclusaoMutua.NUM_RESOURCES; ++i)
+            requestQueues[i] = new RequestQueue(id);
+        
+        new ResourceReleaserThread(this).start();
     }
     
     public void initializeServer() {
@@ -41,16 +51,16 @@ public class Node {
     }
     
     public void initializeClients() throws IOException {
-        Socket[] sockets = new Socket[NUM_NODES];
-        for (int i = 0; i < NUM_NODES; ++i)
+        Socket[] sockets = new Socket[ExclusaoMutua.NUM_NODES];
+        for (int i = 0; i < ExclusaoMutua.NUM_NODES; ++i)
             sockets[i] = new Socket("localhost", 3031 + i);
         
-        OutputStreamWriter[] streams = new OutputStreamWriter[NUM_NODES];
-        for (int i = 0; i < NUM_NODES; ++i)
+        OutputStreamWriter[] streams = new OutputStreamWriter[ExclusaoMutua.NUM_NODES];
+        for (int i = 0; i < ExclusaoMutua.NUM_NODES; ++i)
             streams[i] = new OutputStreamWriter(sockets[i].getOutputStream());
         
-        writers = new BufferedWriter[NUM_NODES];
-        for (int i = 0; i < NUM_NODES; ++i)
+        writers = new BufferedWriter[ExclusaoMutua.NUM_NODES];
+        for (int i = 0; i < ExclusaoMutua.NUM_NODES; ++i)
             writers[i] = new BufferedWriter(streams[i]);
     }
     
@@ -62,23 +72,32 @@ public class Node {
         return id;
     }
 
-    public RequestQueue getRequestQueue() {
-        return requestQueue;
+    public ConcurrentHashMap<RequestId, Integer> getRequestResourceMap() {
+        return requestResourceMap;
+    }
+
+    public RequestQueue getRequestQueue(int resourceId) {
+        return requestQueues[resourceId];
     }
     
-    public synchronized void multicastRequest() throws IOException {
-        requestQueue.pushRequest(new RequestId(clock, id));
+    public synchronized void multicastRequest(int resourceId) throws IOException {
+        RequestId requestId = new RequestId(clock, id);
         
-        for (int i = 0; i < NUM_NODES; ++i) {
+        requestResourceMap.put(requestId, resourceId);
+        requestQueues[resourceId].pushRequest(requestId);
+        
+        for (int i = 0; i < ExclusaoMutua.NUM_NODES; ++i) {
             if (i == id)
                 continue;
             
             // Write message
-            // - Message identification
+            // - Identification
             writers[i].write(Integer.toString(clock) + "\n"); // Clock
             writers[i].write(Integer.toString(id) + "\n"); // Node id
-            // - Message ack flag
-            writers[i].write(Boolean.toString(false) + "\n"); // Response flag
+            // - Response flag
+            writers[i].write(Boolean.toString(false) + "\n");
+            // - Resource id
+            writers[i].write(Integer.toString(resourceId) + "\n");
 
             // Flush output stream
             writers[i].flush();
@@ -88,23 +107,66 @@ public class Node {
         ++clock;
     }
     
-    public synchronized void sendResponse(RequestId requestId) throws IOException {
+    public synchronized void sendAckResponse(RequestId requestId) throws IOException {
         int nodeId = requestId.getNodeId();
         
         // Write message
-        // - Message identification
+        // - Identification
         writers[nodeId].write(Integer.toString(clock) + "\n"); // Clock
         writers[nodeId].write(Integer.toString(id) + "\n"); // Node id
-        // - Message ack flag
+        // - Response flag
         writers[nodeId].write(Boolean.toString(true) + "\n"); // Response flag
+        // - Ack flag
+        writers[nodeId].write(Boolean.toString(true) + "\n"); // Ack flag
         // - Acked request identification
-        writers[nodeId].write(requestId.getClock() + "\n"); // Request clock
-        writers[nodeId].write(requestId.getNodeId() + "\n"); // Request node id
+        writers[nodeId].write(Integer.toString(requestId.getClock()) + "\n"); // Request clock
+        writers[nodeId].write(Integer.toString(requestId.getNodeId()) + "\n"); // Request node id
 
         // Flush output stream
         writers[nodeId].flush();
         
         // Increment clock
         ++clock;
+    }
+    
+    public synchronized void sendNackResponse(RequestId requestId) throws IOException {
+        int nodeId = requestId.getNodeId();
+        
+        // Write message
+        // - Identification
+        writers[nodeId].write(Integer.toString(clock) + "\n"); // Clock
+        writers[nodeId].write(Integer.toString(id) + "\n"); // Node id
+        // - Response flag
+        writers[nodeId].write(Boolean.toString(true) + "\n"); // Response flag
+        // - Ack flag
+        writers[nodeId].write(Boolean.toString(false) + "\n"); // Ack flag
+        // - Nacked request identification
+        writers[nodeId].write(Integer.toString(requestId.getClock()) + "\n"); // Request clock
+        writers[nodeId].write(Integer.toString(requestId.getNodeId()) + "\n"); // Request node id
+
+        // Flush output stream
+        writers[nodeId].flush();
+        
+        // Increment clock
+        ++clock;
+    }
+    
+    public synchronized void updateRequestQueue(int resourceId) throws IOException {
+        while (true) {
+            // Try to acquire resource
+            if (getRequestQueue(resourceId).tryAcquiringTopRequestResource()) {
+                synchronized (System.out) {
+                    System.out.print("Recurso " + resourceId + " obtido.\n");
+                }
+                break;
+            }
+            
+            // Try to deliver request
+            RequestId requestId = getRequestQueue(resourceId).tryAcknowledgingTopRequest();
+            if (requestId == null)
+                break;
+            
+            sendAckResponse(requestId);
+        }
     }
 }

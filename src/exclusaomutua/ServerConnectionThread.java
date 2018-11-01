@@ -10,7 +10,6 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.Socket;
-import java.util.Scanner;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -19,7 +18,8 @@ import java.util.logging.Logger;
  * @author Renato Correa
  */
 public class ServerConnectionThread extends Thread {
-    private static final Object printLock = new Object();
+    private final Socket socket;
+    private final Node node;
     
     private BufferedReader bufferedReader;
             
@@ -28,23 +28,37 @@ public class ServerConnectionThread extends Thread {
         this.node = node;
     }
     
-    private void receiveRequest() throws IOException, InterruptedException {
+    private void receiveRequest() throws IOException {
         // Receive request
         int clock = Integer.parseInt(bufferedReader.readLine());
         int nodeId = Integer.parseInt(bufferedReader.readLine());
         
-        // Update node clock
-        node.updateClock(clock);
-        
+        // Receive response flag
         boolean isResponse = Boolean.parseBoolean(bufferedReader.readLine());
         
+        int resourceId;
         if (!isResponse) {
+            // Receive resource id
+            resourceId = Integer.parseInt(bufferedReader.readLine());
+            
             // Create request id
             RequestId requestId = new RequestId(clock, nodeId);
-            
+        
+            // Store request resource
+            node.getRequestResourceMap().put(requestId, resourceId);
+
             // Push request to the queue
-            node.getRequestQueue().pushRequest(requestId);
+            node.getRequestQueue(resourceId).pushRequest(requestId);
+            
+            // If the request isn't immediately approved
+            if (node.getRequestQueue(resourceId).peek() != requestId) {
+                // Send nak response
+                node.sendNackResponse(requestId);
+            }
         } else {
+            // Ack flag
+            boolean isAck = Boolean.parseBoolean(bufferedReader.readLine());
+            
             // Request message informations
             int requestClock = Integer.parseInt(bufferedReader.readLine());
             int requestNodeId = Integer.parseInt(bufferedReader.readLine());
@@ -52,26 +66,24 @@ public class ServerConnectionThread extends Thread {
             // Create request id
             RequestId requestId = new RequestId(requestClock, requestNodeId);
             
-            // Increment request responses
-            node.getRequestQueue().incrementRequestResponses(requestId);
-        }
-
-        // Try to deliver the request
-        while (true) {
-            RequestId requestId = node.getRequestQueue().tryDeliveringRequest();
-            if (requestId == null)
-                break;
+            // Get resource id
+            resourceId = node.getRequestResourceMap().get(requestId);
             
-            if (requestId.getNodeId() == node.getId()) {
-                // Print the delivered request
+            if (isAck) {
+                // Increment request responses
+                node.getRequestQueue(resourceId).incrementRequestResponses(requestId);
+            } else {
                 synchronized (System.out) {
-                    System.out.print("To com o bagulho!!!\n");
+                    System.out.print("NAK recebido para o recurso " + resourceId + ".\n");
                 }
-
-                ServerConnectionThread.sleep(4000);
-            } else
-                node.sendResponse(requestId);
+            }
         }
+        
+        // Deliver requests
+        node.updateRequestQueue(resourceId);
+        
+        // Update node clock
+        node.updateClock(clock);
     }
     
     @Override
@@ -80,14 +92,10 @@ public class ServerConnectionThread extends Thread {
             InputStreamReader streamReader = new InputStreamReader(socket.getInputStream());
             bufferedReader = new BufferedReader(streamReader);
             
-            while (this.isAlive()) {
+            while (this.isAlive())
                 receiveRequest();
-            }
-        } catch (IOException | InterruptedException ex) {
+        } catch (IOException ex) {
             Logger.getLogger(ServerConnectionThread.class.getName()).log(Level.SEVERE, null, ex);
         }
     }
-    
-    private final Socket socket;
-    private final Node node;
 }
